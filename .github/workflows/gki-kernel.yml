@@ -9,9 +9,9 @@ on:
         default: "124"
         type: string
       os_patch_level:
-        description: "OS patch level for manifest branch (e.g. 124 to form common-android14-6.1-124)"
+        description: "OS patch level month tag for manifest branch (e.g. 2025-02 to form common-android14-6.1-2025-02)"
         required: true
-        default: "124"
+        default: "2025-02"
         type: string
       version:
         description: "Optional localversion suffix"
