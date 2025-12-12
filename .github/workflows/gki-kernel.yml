@@ -1,0 +1,118 @@
+name: GKI Kernel Build (NetOpt Only)
+
+permissions:
+  contents: write
+  actions: write
+
+on:
+  workflow_call:
+    inputs:
+      make_release:
+        required: true
+        type: boolean
+        default: false
+      android_version:
+        required: true
+        type: string
+      kernel_version:
+        required: true
+        type: string
+      sub_level:
+        required: true
+        type: string
+      os_patch_level:
+        required: true
+        type: string
+      version:
+        required: false
+        type: string
+        default: ""
+      net_opt:
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  build-kernel-netopt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Maximize Build Space
+        uses: AdityaGarg8/remove-unwanted-software@v5
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+          remove-large-packages: 'true'
+          remove-swapfile: 'true'
+          remove-cached-tools: 'false'
+
+      - name: 安装依赖
+        run: sudo apt update && sudo apt install -y ccache python3 git curl
+
+      - name: 缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-ccache-
+
+      - name: 安装 repo 工具
+        run: |
+          mkdir -p ./git-repo
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ./git-repo/repo
+          chmod a+rx ./git-repo/repo
+          echo "REPO=$GITHUB_WORKSPACE/./git-repo/repo" >> $GITHUB_ENV
+
+      - name: 设置工具链
+        run: |
+          AOSP_MIRROR=https://android.googlesource.com
+          BRANCH=main-kernel-build-2024
+          git clone $AOSP_MIRROR/kernel/prebuilts/build-tools -b $BRANCH --depth 1 kernel-build-tools
+          git clone $AOSP_MIRROR/platform/system/tools/mkbootimg -b $BRANCH --depth 1 mkbootimg
+          echo "AVBTOOL=$GITHUB_WORKSPACE/kernel-build-tools/linux-x86/bin/avbtool" >> $GITHUB_ENV
+          echo "MKBOOTIMG=$GITHUB_WORKSPACE/mkbootimg/mkbootimg.py" >> $GITHUB_ENV
+          echo "UNPACK_BOOTIMG=$GITHUB_WORKSPACE/mkbootimg/unpack_bootimg.py" >> $GITHUB_ENV
+
+      - name: 设置 CONFIG 环境变量
+        run: |
+          CONFIG="${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}"
+          echo "CONFIG=$CONFIG" >> $GITHUB_ENV
+
+      - name: 同步 GKI 源码
+        run: |
+          echo "Creating folder for configuration: $CONFIG..."
+          mkdir -p "$CONFIG"
+          cd "$CONFIG"
+          FORMATTED_BRANCH="${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.os_patch_level }}"
+          $REPO init --depth=1 --u https://android.googlesource.com/kernel/manifest -b common-${FORMATTED_BRANCH} --repo-rev=v2.16
+          $REPO --trace sync -c -j$(nproc --all) --no-tags --fail-fast
+
+      - name: 追加网络优化配置
+        if: ${{ inputs.net_opt }}
+        run: |
+          cd "$GITHUB_WORKSPACE/$CONFIG"
+          bash "$GITHUB_WORKSPACE/gki_kernel/net_opt_patch.sh" "$GITHUB_WORKSPACE/$CONFIG"
+
+      - name: 构建内核
+        run: |
+          set -e
+          set -x
+          cd "$CONFIG"
+          if [ -f "build/build.sh" ]; then
+            LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang"
+          else
+            tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=fast --lto=thin //common:kernel_aarch64_dist
+          fi
+
+      - name: 导出产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.os_patch_level }}
+          path: |
+            ${{ github.workspace }}/${{ env.CONFIG }}/bazel-bin/common/kernel_aarch64/Image
+            ${{ github.workspace }}/${{ env.CONFIG }}/bazel-bin/common/kernel_aarch64/Image.lz4
+            ${{ github.workspace }}/${{ env.CONFIG }}/out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist/Image
+            ${{ github.workspace }}/${{ env.CONFIG }}/out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist/Image.lz4

@@ -1,0 +1,44 @@
+name: Android 14 6.1 (NetOpt Only)
+
+on:
+  workflow_call:
+    inputs:
+      make_release:
+        required: true
+        type: boolean
+        default: false
+      android_version:
+        required: true
+        type: string
+        default: android14
+      kernel_version:
+        required: true
+        type: string
+        default: "6.1"
+      sub_level:
+        required: true
+        type: string
+      os_patch_level:
+        required: true
+        type: string
+      version:
+        required: false
+        type: string
+        default: ""
+      net_opt:
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  build-kernel-a14-6-1-netopt:
+    uses: ./.github/workflows/gki-kernel.yml
+    secrets: inherit
+    with:
+      make_release: ${{ inputs.make_release }}
+      android_version: ${{ inputs.android_version }}
+      kernel_version: ${{ inputs.kernel_version }}
+      sub_level: ${{ inputs.sub_level }}
+      os_patch_level: ${{ inputs.os_patch_level }}
+      version: ${{ inputs.version }}
+      net_opt: ${{ inputs.net_opt }}

@@ -1,0 +1,41 @@
+name: 构建内核A14-6.1
+
+permissions:
+  contents: write
+  actions: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      sub_level:
+        description: "内核子版本号 (例如: 124)"
+        required: true
+        type: string
+        default: "124"
+      os_patch_level:
+        description: "Android 安全补丁级别 (例如: 2025-02)"
+        required: true
+        type: string
+        default: "2025-02"
+      version:
+        description: "自定义版本后缀 (可选)"
+        required: false
+        type: string
+      net_opt:
+        description: "是否开启网络优化 (Netfilter/IPSet/IPv6 NAT/BBR)"
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  build-kernel-a14-6-1:
+    uses: ./.github/workflows/kernel-a14-6.1.yml
+    secrets: inherit
+    with:
+      make_release: false
+      android_version: "android14"
+      kernel_version: "6.1"
+      sub_level: ${{ inputs.sub_level }}
+      os_patch_level: ${{ inputs.os_patch_level }}
+      version: ${{ inputs.version }}
+      net_opt: ${{ inputs.net_opt }}
