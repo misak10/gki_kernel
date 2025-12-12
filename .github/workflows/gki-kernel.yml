@@ -1,40 +1,31 @@
-name: GKI Kernel Build (NetOpt Only)
-
-permissions:
-  contents: write
-  actions: write
+name: GKI 6.1 NetOpt Build
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
-      make_release:
-        required: true
-        type: boolean
-        default: false
-      android_version:
-        required: true
-        type: string
-      kernel_version:
-        required: true
-        type: string
       sub_level:
+        description: "Android 14 6.1 sublevel (e.g. 124)"
         required: true
+        default: "124"
         type: string
       os_patch_level:
+        description: "OS patch level for manifest branch (e.g. 124 to form common-android14-6.1-124)"
         required: true
+        default: "124"
         type: string
       version:
+        description: "Optional localversion suffix"
         required: false
         type: string
-        default: ""
-      net_opt:
-        required: true
-        type: boolean
-        default: true
 
 jobs:
-  build-kernel-netopt:
+  build-gki-61-netopt:
     runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+
     steps:
       - name: Maximize Build Space
         uses: AdityaGarg8/remove-unwanted-software@v5
@@ -47,17 +38,52 @@ jobs:
           remove-large-packages: 'true'
           remove-swapfile: 'true'
           remove-cached-tools: 'false'
+          verbose: 'true'
 
-      - name: 安装依赖
-        run: sudo apt update && sudo apt install -y ccache python3 git curl
+      - name: 安装依赖与 ccache
+        run: |
+          sudo apt update
+          sudo apt upgrade -y
+          sudo apt install -y ccache python3 git curl
 
-      - name: 缓存 ccache
+      - name: 配置 ccache
+        run: |
+          mkdir -p ~/.cache/bazel
+          ccache --version
+          ccache --max-size=2G
+          ccache --set-config=compression=true
+          echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
+
+      - name: 从缓存中还原 ccache
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-ccache-${{ github.sha }}
+          key: gki-android14-6.1-${{ inputs.sub_level }}-ccache-${{ github.sha }}
           restore-keys: |
-            ${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-ccache-
+            gki-android14-6.1-${{ inputs.sub_level }}-ccache-
+
+      - name: 缓存工具链
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            kernel-build-tools
+            mkbootimg
+          key: toolchain-${{ runner.os }}-v1
+
+      - name: 下载工具链（如果未找到缓存）
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          AOSP_MIRROR=https://android.googlesource.com
+          BRANCH=main-kernel-build-2024
+          git clone $AOSP_MIRROR/kernel/prebuilts/build-tools -b $BRANCH --depth 1 kernel-build-tools
+          git clone $AOSP_MIRROR/platform/system/tools/mkbootimg -b $BRANCH --depth 1 mkbootimg
+
+      - name: 设置工具链环境变量
+        run: |
+          echo "AVBTOOL=$GITHUB_WORKSPACE/kernel-build-tools/linux-x86/bin/avbtool" >> $GITHUB_ENV
+          echo "MKBOOTIMG=$GITHUB_WORKSPACE/mkbootimg/mkbootimg.py" >> $GITHUB_ENV
+          echo "UNPACK_BOOTIMG=$GITHUB_WORKSPACE/mkbootimg/unpack_bootimg.py" >> $GITHUB_ENV
 
       - name: 安装 repo 工具
         run: |
@@ -66,112 +92,109 @@ jobs:
           chmod a+rx ./git-repo/repo
           echo "REPO=$GITHUB_WORKSPACE/./git-repo/repo" >> $GITHUB_ENV
 
-      - name: 设置工具链
+      - name: 设定 CONFIG 环境变量
         run: |
-          AOSP_MIRROR=https://android.googlesource.com
-          BRANCH=main-kernel-build-2024
-          git clone $AOSP_MIRROR/kernel/prebuilts/build-tools -b $BRANCH --depth 1 kernel-build-tools
-          git clone $AOSP_MIRROR/platform/system/tools/mkbootimg -b $BRANCH --depth 1 mkbootimg
-          echo "AVBTOOL=$GITHUB_WORKSPACE/kernel-build-tools/linux-x86/bin/avbtool" >> $GITHUB_ENV
-          echo "MKBOOTIMG=$GITHUB_WORKSPACE/mkbootimg/mkbootimg.py" >> $GITHUB_ENV
-          echo "UNPACK_BOOTIMG=$GITHUB_WORKSPACE/mkbootimg/unpack_bootimg.py" >> $GITHUB_ENV
-
-      - name: 设置 CONFIG 环境变量
-        run: |
-          CONFIG="${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}"
+          CONFIG="android14-6.1-${{ inputs.sub_level }}"
           echo "CONFIG=$CONFIG" >> $GITHUB_ENV
+          echo "CONFIG set to: $CONFIG"
 
-      - name: 同步 GKI 源码
+      - name: 初始化并同步 GKI 源代码 (android14-6.1)
         run: |
           echo "Creating folder for configuration: $CONFIG..."
           mkdir -p "$CONFIG"
           cd "$CONFIG"
-          FORMATTED_BRANCH="${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.os_patch_level }}"
+
+          FORMATTED_BRANCH="android14-6.1-${{ inputs.os_patch_level }}"
           $REPO init --depth=1 --u https://android.googlesource.com/kernel/manifest -b common-${FORMATTED_BRANCH} --repo-rev=v2.16
+          $REPO --version
           $REPO --trace sync -c -j$(nproc --all) --no-tags --fail-fast
 
-      - name: 追加网络优化配置
-        if: ${{ inputs.net_opt }}
+      - name: 仅应用 网络优化配置 到 gki_defconfig
         run: |
-          cd "$GITHUB_WORKSPACE/$CONFIG"
+          echo "更改为配置目录: $CONFIG..."
+          cd "$CONFIG"
           CONFIG_FILE="./common/arch/arm64/configs/gki_defconfig"
-          echo "[+] Target defconfig: $CONFIG_FILE"
 
-          # Additional TTL/HL helpers
-          {
-            echo "CONFIG_IP_NF_TARGET_TTL=y"
-            echo "CONFIG_IP6_NF_TARGET_HL=y"
-            echo "CONFIG_IP6_NF_MATCH_HL=y"
-          } >> "$CONFIG_FILE"
+          # 基础补充
+          echo "CONFIG_IP_NF_TARGET_TTL=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP6_NF_TARGET_HL=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP6_NF_MATCH_HL=y" >> "$CONFIG_FILE"
 
-          # IP_SET core and varieties
-          {
-            echo "CONFIG_NETFILTER=y"
-            echo "CONFIG_NETFILTER_ADVANCED=y"
-            echo "CONFIG_NETFILTER_XTABLES=y"
-            echo "CONFIG_IP_SET=y"
-            echo "CONFIG_IP_SET_MAX=256"
-            echo "CONFIG_IP_SET_BITMAP_IP=y"
-            echo "CONFIG_IP_SET_BITMAP_IPMAC=y"
-            echo "CONFIG_IP_SET_BITMAP_PORT=y"
-            echo "CONFIG_IP_SET_HASH_IP=y"
-            echo "CONFIG_IP_SET_HASH_IPMARK=y"
-            echo "CONFIG_IP_SET_HASH_IPPORT=y"
-            echo "CONFIG_IP_SET_HASH_IPPORTIP=y"
-            echo "CONFIG_IP_SET_HASH_IPPORTNET=y"
-            echo "CONFIG_IP_SET_HASH_IPMAC=y"
-            echo "CONFIG_IP_SET_HASH_MAC=y"
-            echo "CONFIG_IP_SET_HASH_NETPORTNET=y"
-            echo "CONFIG_IP_SET_HASH_NET=y"
-            echo "CONFIG_IP_SET_HASH_NETNET=y"
-            echo "CONFIG_IP_SET_HASH_NETPORT=y"
-            echo "CONFIG_IP_SET_HASH_NETIFACE=y"
-            echo "CONFIG_IP_SET_LIST_SET=y"
-            echo "CONFIG_IP_NF_SET=y"
-            echo "CONFIG_IP6_NF_SET=y"
-          } >> "$CONFIG_FILE"
+          # IP_SET 支持
+          echo "CONFIG_NETFILTER=y" >> "$CONFIG_FILE"
+          echo "CONFIG_NETFILTER_ADVANCED=y" >> "$CONFIG_FILE"
+          echo "CONFIG_NETFILTER_XTABLES=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_MAX=256" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_BITMAP_IP=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_BITMAP_IPMAC=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_BITMAP_PORT=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_IP=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_IPMARK=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_IPPORT=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_IPPORTIP=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_IPPORTNET=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_IPMAC=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_MAC=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_NETPORTNET=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_NET=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_NETNET=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_NETPORT=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_NETIFACE=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_SET_LIST_SET=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_NF_SET=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP6_NF_SET=y" >> "$CONFIG_FILE"
 
-          # iptables set extensions and useful XT targets/matches
-          {
-            echo "CONFIG_NETFILTER_XT_SET=y"
-            echo "CONFIG_NETFILTER_XT_MATCH_SET=y"
-            echo "CONFIG_NETFILTER_XT_TARGET_TPROXY=y"
-            echo "CONFIG_NETFILTER_XT_TARGET_REDIRECT=y"
-            echo "CONFIG_NETFILTER_XT_TARGET_MARK=y"
-            echo "CONFIG_NETFILTER_XT_MATCH_SOCKET=y"
-            echo "CONFIG_NETFILTER_XT_MATCH_OWNER=y"
-            echo "CONFIG_NETFILTER_XT_MATCH_MARK=y"
-            echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y"
-            echo "CONFIG_NETFILTER_XT_MATCH_MULTIPORT=y"
-          } >> "$CONFIG_FILE"
+          # iptables 集成 set 扩展
+          echo "CONFIG_NETFILTER_XT_SET=y" >> "$CONFIG_FILE"
+          echo "CONFIG_NETFILTER_XT_MATCH_SET=y" >> "$CONFIG_FILE"
 
-          # IPv6 NAT
-          {
-            echo "CONFIG_NF_NAT=y"
-            echo "CONFIG_IP6_NF_IPTABLES=y"
-            echo "CONFIG_IP6_NF_NAT=y"
-            echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y"
-            echo "CONFIG_IP6_NF_TARGET_NPT=y"
-          } >> "$CONFIG_FILE"
+          # 其他常用 Netfilter 扩展
+          echo "CONFIG_NETFILTER_XT_TARGET_TPROXY=y" >> "$CONFIG_FILE"
+          echo "CONFIG_NETFILTER_XT_TARGET_REDIRECT=y" >> "$CONFIG_FILE"
+          echo "CONFIG_NETFILTER_XT_TARGET_MARK=y" >> "$CONFIG_FILE"
+          echo "CONFIG_NETFILTER_XT_MATCH_SOCKET=y" >> "$CONFIG_FILE"
+          echo "CONFIG_NETFILTER_XT_MATCH_OWNER=y" >> "$CONFIG_FILE"
+          echo "CONFIG_NETFILTER_XT_MATCH_MARK=y" >> "$CONFIG_FILE"
+          echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> "$CONFIG_FILE"
+          echo "CONFIG_NETFILTER_XT_MATCH_MULTIPORT=y" >> "$CONFIG_FILE"
 
-          # BBR
-          {
-            echo "CONFIG_TCP_CONG_ADVANCED=y"
-            echo "CONFIG_TCP_CONG_BBR=y"
-            echo "CONFIG_NET_SCH_FQ=y"
-            echo "CONFIG_TCP_CONG_WESTWOOD=y"
-          } >> "$CONFIG_FILE"
+          # IPv6 NAT 支持
+          echo "CONFIG_NF_NAT=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP6_NF_IPTABLES=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP6_NF_NAT=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP6_NF_TARGET_NPT=y" >> "$CONFIG_FILE"
 
-      - name: 规范化 defconfig（对齐 savedefconfig）
+          # BBR 配置
+          echo "CONFIG_TCP_CONG_ADVANCED=y" >> "$CONFIG_FILE"
+          echo "CONFIG_TCP_CONG_BBR=y" >> "$CONFIG_FILE"
+          echo "CONFIG_NET_SCH_FQ=y" >> "$CONFIG_FILE"
+          echo "CONFIG_TCP_CONG_BIC=n" >> "$CONFIG_FILE"
+          echo "CONFIG_TCP_CONG_WESTWOOD=y" >> "$CONFIG_FILE"
+          echo "CONFIG_TCP_CONG_HTCP=n" >> "$CONFIG_FILE"
+
+      - name: 可选 - 配置内核显示版本/时间戳
         run: |
-          set -e
-          cd "$GITHUB_WORKSPACE/$CONFIG/common"
-          # 生成 .config 并导出最小 defconfig，然后覆盖 gki_defconfig 以避免检查失败
-          make O=out ARCH=arm64 gki_defconfig
-          make O=out ARCH=arm64 savedefconfig
-          cp out/defconfig arch/arm64/configs/gki_defconfig
+          echo "更改为配置目录: $CONFIG..."
+          cd "$CONFIG"
 
-      - name: 构建（带重试）
+          if [ ! -z "${{ inputs.version }}" ]; then
+            echo "版本号不为空"
+            sed -i '$s|echo "\$res"|echo "${{ inputs.version }}"|' ./common/scripts/setlocalversion
+          else
+            echo "版本号为空，使用默认值"
+            sed -i '$s|echo "\$res"|echo "\$res"|' ./common/scripts/setlocalversion
+          fi
+
+          CURRENT_TIME=$(date -u +"%a %b %d %H:%M:%S UTC %Y")
+          echo "CURRENT_TIME=$CURRENT_TIME"
+          perl -pi -e "s{UTS_VERSION=\"\\\$\(echo \\\$UTS_VERSION \\\$CONFIG_FLAGS \\\$TIMESTAMP \\| cut -b -\\\$UTS_LEN\)\"}{UTS_VERSION=\"#1 SMP PREEMPT $CURRENT_TIME\"}" ./common/scripts/mkcompile_h
+
+          # 针对 6.1 调整 init/Makefile 的时间戳展示
+          sed -i -e "s|\$(preempt-flag-y) \"\$(build-timestamp)\"|\$(preempt-flag-y) \"$CURRENT_TIME\"|" ./common/init/Makefile
+
+      - name: Build with retry (GKI 6.1)
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 30
@@ -181,7 +204,8 @@ jobs:
             set -e
             set -x
             cd "$CONFIG"
-            # 与参考工作流保持一致的预处理
+
+            # 适配 Bazel 构建
             sed -i 's/BUILD_SYSTEM_DLKM=1/BUILD_SYSTEM_DLKM=0/' common/build.config.gki.aarch64 || true
             sed -i '/MODULES_ORDER=android\/gki_aarch64_modules/d' common/build.config.gki.aarch64 || true
             sed -i '/KMI_SYMBOL_LIST_STRICT_MODE/d' common/build.config.gki.aarch64 || true
@@ -192,13 +216,4 @@ jobs:
             else
               tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=fast --lto=thin //common:kernel_aarch64_dist || exit 1
             fi
-
-      - name: 导出产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.os_patch_level }}
-          path: |
-            ${{ github.workspace }}/${{ env.CONFIG }}/bazel-bin/common/kernel_aarch64/Image
-            ${{ github.workspace }}/${{ env.CONFIG }}/bazel-bin/common/kernel_aarch64/Image.lz4
-            ${{ github.workspace }}/${{ env.CONFIG }}/out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist/Image
-            ${{ github.workspace }}/${{ env.CONFIG }}/out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist/Image.lz4
+            ccache --show-stats
