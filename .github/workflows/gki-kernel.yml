@@ -94,7 +94,7 @@ jobs:
         if: ${{ inputs.net_opt }}
         run: |
           cd "$GITHUB_WORKSPACE/$CONFIG"
-          bash "$GITHUB_WORKSPACE/gki_kernel/net_opt_patch.sh" "$GITHUB_WORKSPACE/$CONFIG"
+          bash "$GITHUB_WORKSPACE/net_opt_patch.sh" "$GITHUB_WORKSPACE/$CONFIG"
 
       - name: 构建内核
         run: |
