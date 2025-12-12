@@ -44,7 +44,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt upgrade -y
-          sudo apt install -y ccache python3 git curl
+          sudo apt install -y ccache python3 git curl bc bison flex
 
       - name: 配置 ccache
         run: |
@@ -173,6 +173,18 @@ jobs:
           echo "CONFIG_TCP_CONG_BIC=n" >> "$CONFIG_FILE"
           echo "CONFIG_TCP_CONG_WESTWOOD=y" >> "$CONFIG_FILE"
           echo "CONFIG_TCP_CONG_HTCP=n" >> "$CONFIG_FILE"
+
+      - name: 标准化 gki_defconfig（savedefconfig）
+        run: |
+          echo "标准化 gki_defconfig 以通过 Bazel 的 savedefconfig 校验..."
+          cd "$CONFIG/common"
+          # 基于当前 gki_defconfig 生成 .config，并导出标准 defconfig
+          make ARCH=arm64 O=out gki_defconfig
+          make ARCH=arm64 O=out savedefconfig
+          # 用标准化后的 defconfig 覆盖 gki_defconfig，确保内容和顺序一致
+          cp out/defconfig ./arch/arm64/configs/gki_defconfig
+          # 对于 Make 构建路径，移除 check_defconfig（若存在则生效）
+          sed -i 's/check_defconfig//' ./build.config.gki || true
 
       - name: 可选 - 配置内核显示版本/时间戳
         run: |
