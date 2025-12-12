@@ -94,7 +94,73 @@ jobs:
         if: ${{ inputs.net_opt }}
         run: |
           cd "$GITHUB_WORKSPACE/$CONFIG"
-          bash "$GITHUB_WORKSPACE/net_opt_patch.sh" "$GITHUB_WORKSPACE/$CONFIG"
+          CONFIG_FILE="./common/arch/arm64/configs/gki_defconfig"
+          echo "[+] Target defconfig: $CONFIG_FILE"
+
+          # Additional TTL/HL helpers
+          {
+            echo "CONFIG_IP_NF_TARGET_TTL=y"
+            echo "CONFIG_IP6_NF_TARGET_HL=y"
+            echo "CONFIG_IP6_NF_MATCH_HL=y"
+          } >> "$CONFIG_FILE"
+
+          # IP_SET core and varieties
+          {
+            echo "CONFIG_NETFILTER=y"
+            echo "CONFIG_NETFILTER_ADVANCED=y"
+            echo "CONFIG_NETFILTER_XTABLES=y"
+            echo "CONFIG_IP_SET=y"
+            echo "CONFIG_IP_SET_MAX=256"
+            echo "CONFIG_IP_SET_BITMAP_IP=y"
+            echo "CONFIG_IP_SET_BITMAP_IPMAC=y"
+            echo "CONFIG_IP_SET_BITMAP_PORT=y"
+            echo "CONFIG_IP_SET_HASH_IP=y"
+            echo "CONFIG_IP_SET_HASH_IPMARK=y"
+            echo "CONFIG_IP_SET_HASH_IPPORT=y"
+            echo "CONFIG_IP_SET_HASH_IPPORTIP=y"
+            echo "CONFIG_IP_SET_HASH_IPPORTNET=y"
+            echo "CONFIG_IP_SET_HASH_IPMAC=y"
+            echo "CONFIG_IP_SET_HASH_MAC=y"
+            echo "CONFIG_IP_SET_HASH_NETPORTNET=y"
+            echo "CONFIG_IP_SET_HASH_NET=y"
+            echo "CONFIG_IP_SET_HASH_NETNET=y"
+            echo "CONFIG_IP_SET_HASH_NETPORT=y"
+            echo "CONFIG_IP_SET_HASH_NETIFACE=y"
+            echo "CONFIG_IP_SET_LIST_SET=y"
+            echo "CONFIG_IP_NF_SET=y"
+            echo "CONFIG_IP6_NF_SET=y"
+          } >> "$CONFIG_FILE"
+
+          # iptables set extensions and useful XT targets/matches
+          {
+            echo "CONFIG_NETFILTER_XT_SET=y"
+            echo "CONFIG_NETFILTER_XT_MATCH_SET=y"
+            echo "CONFIG_NETFILTER_XT_TARGET_TPROXY=y"
+            echo "CONFIG_NETFILTER_XT_TARGET_REDIRECT=y"
+            echo "CONFIG_NETFILTER_XT_TARGET_MARK=y"
+            echo "CONFIG_NETFILTER_XT_MATCH_SOCKET=y"
+            echo "CONFIG_NETFILTER_XT_MATCH_OWNER=y"
+            echo "CONFIG_NETFILTER_XT_MATCH_MARK=y"
+            echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y"
+            echo "CONFIG_NETFILTER_XT_MATCH_MULTIPORT=y"
+          } >> "$CONFIG_FILE"
+
+          # IPv6 NAT
+          {
+            echo "CONFIG_NF_NAT=y"
+            echo "CONFIG_IP6_NF_IPTABLES=y"
+            echo "CONFIG_IP6_NF_NAT=y"
+            echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y"
+            echo "CONFIG_IP6_NF_TARGET_NPT=y"
+          } >> "$CONFIG_FILE"
+
+          # BBR
+          {
+            echo "CONFIG_TCP_CONG_ADVANCED=y"
+            echo "CONFIG_TCP_CONG_BBR=y"
+            echo "CONFIG_NET_SCH_FQ=y"
+            echo "CONFIG_TCP_CONG_WESTWOOD=y"
+          } >> "$CONFIG_FILE"
 
       - name: 构建内核
         run: |
